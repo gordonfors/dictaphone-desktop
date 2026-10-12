@@ -30,6 +30,7 @@ class UploadWorker(QThread):
         self.json_path = json_path
         self.max_retries = max(1, max_retries)
         self.verify_ssl = verify_ssl
+        self._is_stopped = False
 
         # Автоматическое определение и нормализация протокола (HTTP / HTTPS)
         raw_url = upload_url.strip()
@@ -44,6 +45,10 @@ class UploadWorker(QThread):
 
         self.is_https = self.upload_url.lower().startswith("https://")
 
+    def stop(self) -> None:
+        """Безопасная отмена фоновой отправки при закрытии приложения."""
+        self._is_stopped = True
+
     def run(self):
         protocol_tag = "HTTPS" if self.is_https else "HTTP"
         print(f"[Uploader] Старт выгрузки на {self.upload_url} [Протокол: {protocol_tag}]")
@@ -54,6 +59,10 @@ class UploadWorker(QThread):
 
         audio_file = Path(self.audio_path)
         json_file = Path(self.json_path)
+        if not json_file.exists():
+            fallback_json = audio_file.with_suffix(".json")
+            if fallback_json.exists():
+                json_file = fallback_json
 
         if not audio_file.exists():
             self.finished.emit(self.rec_id, False, f"Аудиофайл не найден: {audio_file.name}")
@@ -71,13 +80,16 @@ class UploadWorker(QThread):
 
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
+            if self._is_stopped:
+                return
+
             try:
                 self.progress.emit(self.rec_id, f"Отправка {protocol_tag} ({attempt}/{self.max_retries})...")
                 
                 with open(audio_file, "rb") as fa:
                     files = {
                         "audio": (audio_file.name, fa, "audio/webm"),
-                        "json": (json_file.name, json_content.encode("utf-8"), "application/json")
+                        "json": (json_file.name if json_file.name else f"{audio_file.stem}.json", json_content.encode("utf-8"), "application/json")
                     }
                     data = {
                         "id": str(json_data.get("id", "")),
@@ -95,6 +107,7 @@ class UploadWorker(QThread):
                         "metadata": json_content
                     }
                     
+                    response = None
                     try:
                         # Первая попытка с заданным режимом проверки SSL
                         response = requests.post(
@@ -108,6 +121,7 @@ class UploadWorker(QThread):
                         # Умная обработка HTTPS: если сертификат самоподписанный, автоматически повторяем без verify
                         print(f"[Uploader] Обнаружен самоподписанный SSL сертификат: {ssl_err}. Повтор в безопасном нестрогом режиме...")
                         self.progress.emit(self.rec_id, f"HTTPS (самоподписанный SSL, попытка {attempt})...")
+                        self.verify_ssl = False
                         fa.seek(0)
                         files["audio"] = (audio_file.name, fa, "audio/webm")
                         response = requests.post(
@@ -118,18 +132,27 @@ class UploadWorker(QThread):
                             verify=False
                         )
                     
-                    if 200 <= response.status_code < 300:
-                        self.finished.emit(self.rec_id, True, f"Успешно отправлено ({protocol_tag})")
-                        return
-                    else:
-                        last_error = f"HTTP {response.status_code}: {response.text[:100]}"
+                    if response is not None:
+                        if 200 <= response.status_code < 300:
+                            response.close()
+                            self.finished.emit(self.rec_id, True, f"Успешно отправлено ({protocol_tag})")
+                            return
+                        else:
+                            last_error = f"HTTP {response.status_code}: {response.text[:100]}"
+                            response.close()
             except Exception as e:
                 last_error = str(e)
                 print(f"[Uploader] Попытка {attempt}/{self.max_retries} завершилась с ошибкой: {e}")
 
             if attempt < self.max_retries:
                 # Нарастающий интервал ожидания: 2с, 4с, 6с, 8с...
+                # Спим короткими тактами с быстрой реакцией на отмену
                 backoff = 2.0 * attempt
-                time.sleep(backoff)
+                steps = int(backoff * 10)
+                for _ in range(steps):
+                    if self._is_stopped:
+                        return
+                    time.sleep(0.1)
 
-        self.finished.emit(self.rec_id, False, f"Ошибка сети ({protocol_tag}): {last_error}")
+        if not self._is_stopped:
+            self.finished.emit(self.rec_id, False, f"Ошибка сети ({protocol_tag}): {last_error}")

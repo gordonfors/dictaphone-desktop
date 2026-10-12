@@ -137,14 +137,17 @@ git push -u origin main
 curl.exe -X POST "http://127.0.0.1:8765/start" -H "Content-Type: application/json; charset=utf-8" -d '{"id":"meeting-101","title":"Планерка","agenda":[{"name":"Вопрос 1"}],"participants":[{"name":"Иван"}]}'
 ```
 
-### Статус-коды
-- `200 OK`: Успешное выполнение команды.
-- `400 Bad Request`: Некорректный синтаксис JSON или пустой запрос.
-- `404 Not Found`: Неизвестный маршрут.
-- `405 Method Not Allowed`: Недопустимый HTTP-метод.
-- `409 Conflict`: Запись уже активна (`RECORDER_BUSY`).
-- `422 Unprocessable Entity`: Отсутствуют обязательные поля (`id`, `title`).
-- `500 Internal Server Error`: Внутренняя ошибка сервиса.
+### Статус-коды и формат ответа
+Все ответы возвращаются в формате JSON со статусом операции (`status: "ok"` / `"error"`) и кратким английским словом в поле `message`:
+- `POST /start` (200 OK): `{"status": "ok", "message": "started", "id": "...", ...}`
+- `GET/POST /stop` (200 OK): `{"status": "ok", "message": "stopped"}` (или `"message": "idle"`, если запись не велась)
+- `GET /status` (200 OK): `{"status": "ok", "message": "recording"}` (или `"message": "idle"`)
+- `GET/POST /show` (200 OK): `{"status": "ok", "message": "shown"}`
+- `409 Conflict`: `{"status": "error", "message": "busy"}` (запись уже активна)
+- `400 / 422`: `{"status": "error", "message": "invalid"}` (или `"empty_body"`, `"invalid_json"`)
+- `404 Not Found`: `{"status": "error", "message": "not_found"}`
+- `405 Method Not Allowed`: `{"status": "error", "message": "not_allowed"}`
+- `500 Internal Server Error`: `{"status": "error", "message": "error"}`
 
 ---
 

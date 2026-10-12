@@ -33,6 +33,7 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_GET(self):
@@ -44,12 +45,13 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             self._send_json_response(200, {
                 "status": "ok",
                 "code": 200,
-                "service": "Диктофон API",
+                "message": "ready",
+                "service": "dictaphone",
                 "endpoints": {
-                    "POST /start": "Запуск записи (передача JSON метаданных мероприятия)",
-                    "GET /stop": "Остановка текущей записи",
-                    "GET /status": "Проверка текущего статуса рекордера",
-                    "GET /show": "Разворачивание окна диктофона из трея"
+                    "POST /start": "start",
+                    "GET /stop": "stop",
+                    "GET /status": "status",
+                    "GET /show": "show"
                 }
             })
             return
@@ -60,7 +62,7 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "code": 200,
                 "is_recording": is_rec,
-                "message": "Идет запись" if is_rec else "Ожидание сессии"
+                "message": "recording" if is_rec else "idle"
             })
             return
 
@@ -68,24 +70,24 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             is_currently_recording = self.server.wrapper.is_recording_func()
             if self.server.wrapper.on_stop_requested:
                 self.server.wrapper.on_stop_requested()
-            print("[REST API] Получена команда остановки записи (GET /stop)")
+            print("[REST API] Stop command received (GET /stop)")
             self._send_json_response(200, {
                 "status": "ok",
                 "code": 200,
                 "is_recording": False,
                 "was_recording": is_currently_recording,
-                "message": "Команда остановки записи успешно выполнена" if is_currently_recording else "Запись звука не была активна (рекордер в режиме ожидания)"
+                "message": "stopped" if is_currently_recording else "idle"
             })
             return
 
         if normalized_path in ("/show", "/api/show"):
             if self.server.wrapper.on_show_requested:
                 self.server.wrapper.on_show_requested()
-            print("[REST API] Получена команда разворачивания окна (GET /show)")
+            print("[REST API] Show command received (GET /show)")
             self._send_json_response(200, {
                 "status": "ok",
                 "code": 200,
-                "message": "Окно диктофона развернуто на передний план"
+                "message": "shown"
             })
             return
 
@@ -93,7 +95,7 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             "status": "error",
             "code": 404,
             "error": "NOT_FOUND",
-            "message": f"Эндпоинт {self.path} не найден. Используйте POST /start, GET /stop, GET /show или GET /status"
+            "message": "not_found"
         })
 
     def do_POST(self):
@@ -102,33 +104,62 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             if not normalized_path:
                 normalized_path = "/"
 
-            # Команды stop и show теперь поддерживаются исключительно через GET
+            # Поддержка остановки записи через POST /stop
             if normalized_path in ("/stop", "/api/stop"):
-                self._send_json_response(405, {
-                    "status": "error",
-                    "code": 405,
-                    "error": "METHOD_NOT_ALLOWED",
-                    "message": "Метод POST не поддерживается для остановки записи. Команда доступна только через GET /stop."
+                is_currently_recording = self.server.wrapper.is_recording_func()
+                if self.server.wrapper.on_stop_requested:
+                    self.server.wrapper.on_stop_requested()
+                print("[REST API] Stop command received (POST /stop)")
+                self._send_json_response(200, {
+                    "status": "ok",
+                    "code": 200,
+                    "is_recording": False,
+                    "was_recording": is_currently_recording,
+                    "message": "stopped" if is_currently_recording else "idle"
                 })
                 return
 
+            # Поддержка разворачивания окна через POST /show
             if normalized_path in ("/show", "/api/show"):
-                self._send_json_response(405, {
-                    "status": "error",
-                    "code": 405,
-                    "error": "METHOD_NOT_ALLOWED",
-                    "message": "Метод POST не поддерживается для разворачивания окна. Команда доступна только через GET /show."
+                if self.server.wrapper.on_show_requested:
+                    self.server.wrapper.on_show_requested()
+                print("[REST API] Show command received (POST /show)")
+                self._send_json_response(200, {
+                    "status": "ok",
+                    "code": 200,
+                    "message": "shown"
                 })
                 return
 
-            # Для передачи сессии (/start) требуется тело запроса с JSON
-            content_length = int(self.headers.get("Content-Length", 0))
+            # Проверяем допустимость маршрута для старта сессии ДО парсинга тела
+            is_start_path = normalized_path in ("/", "/start", "/api/start", "/session", "/api/session", "/meeting", "/api/meeting")
+            if not is_start_path:
+                self._send_json_response(404, {
+                    "status": "error",
+                    "code": 404,
+                    "error": "NOT_FOUND",
+                    "message": "not_found"
+                })
+                return
+
+            # Безопасное чтение заголовка Content-Length
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+            except (ValueError, TypeError):
+                self._send_json_response(400, {
+                    "status": "error",
+                    "code": 400,
+                    "error": "INVALID_CONTENT_LENGTH",
+                    "message": "invalid"
+                })
+                return
+
             if content_length <= 0:
                 self._send_json_response(400, {
                     "status": "error",
                     "code": 400,
                     "error": "EMPTY_BODY",
-                    "message": "Тело запроса пустое. Отправьте JSON пакет с обязательными полями 'id' (идентификатор) и 'title' (название мероприятия).",
+                    "message": "empty_body",
                     "example": EXAMPLE_SESSION_PAYLOAD
                 })
                 return
@@ -139,7 +170,7 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                     "status": "error",
                     "code": 413,
                     "error": "PAYLOAD_TOO_LARGE",
-                    "message": "Размер тела запроса превышает допустимый лимит (10 МБ)."
+                    "message": "payload_too_large"
                 })
                 return
 
@@ -149,31 +180,27 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                     "status": "error",
                     "code": 400,
                     "error": "EMPTY_BODY",
-                    "message": "Тело запроса содержит только пробельные символы. Отправьте валидный JSON с метаданными сессии.",
-                    "example": EXAMPLE_SESSION_PAYLOAD
+                    "message": "empty_body"
                 })
                 return
 
             # Разбор тела запроса
             try:
                 data = json.loads(body.decode("utf-8"))
-            except UnicodeDecodeError as ue:
+            except UnicodeDecodeError:
                 self._send_json_response(400, {
                     "status": "error",
                     "code": 400,
                     "error": "ENCODING_ERROR",
-                    "message": f"Ошибка кодировки. Тело запроса должно быть в кодировке UTF-8: {ue}"
+                    "message": "invalid_json"
                 })
                 return
-            except json.JSONDecodeError as je:
+            except json.JSONDecodeError:
                 self._send_json_response(400, {
                     "status": "error",
                     "code": 400,
-                    "error": "INVALID_JSON_SYNTAX",
-                    "line": je.lineno,
-                    "column": je.colno,
-                    "message": f"Синтаксическая ошибка в JSON (строка {je.lineno}, колонка {je.colno}): {je.msg}. Проверьте правильность скобок, кавычек и запятых.",
-                    "example": EXAMPLE_SESSION_PAYLOAD
+                    "error": "INVALID_JSON",
+                    "message": "invalid_json"
                 })
                 return
 
@@ -182,109 +209,90 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                 self._send_json_response(400, {
                     "status": "error",
                     "code": 400,
-                    "error": "INVALID_JSON_STRUCTURE",
-                    "message": f"Корневой элемент JSON должен быть объектом {{...}}, а передан: {type(data).__name__}.",
-                    "example": EXAMPLE_SESSION_PAYLOAD
+                    "error": "INVALID_PAYLOAD",
+                    "message": "invalid"
                 })
                 return
 
-            # 2. Проверка команд через JSON body {"command": "stop"} или {"command": "show"}
+            # Поддержка управления командами через тело {"command": "stop"} или {"command": "show"}
             if data.get("command") == "stop" or data.get("action") == "stop":
-                self._send_json_response(405, {
-                    "status": "error",
-                    "code": 405,
-                    "error": "METHOD_NOT_ALLOWED",
-                    "message": "Команда остановки записи через POST устарела. Используйте HTTP запрос GET /stop."
+                is_currently_recording = self.server.wrapper.is_recording_func()
+                if self.server.wrapper.on_stop_requested:
+                    self.server.wrapper.on_stop_requested()
+                print("[REST API] Stop command received from JSON body")
+                self._send_json_response(200, {
+                    "status": "ok",
+                    "code": 200,
+                    "is_recording": False,
+                    "was_recording": is_currently_recording,
+                    "message": "stopped" if is_currently_recording else "idle"
                 })
                 return
 
             if data.get("command") == "show" or data.get("action") == "show":
-                self._send_json_response(405, {
-                    "status": "error",
-                    "code": 405,
-                    "error": "METHOD_NOT_ALLOWED",
-                    "message": "Команда разворачивания окна через POST устарела. Используйте HTTP запрос GET /show."
-                })
-                return
-
-            # 3. Обработка старта сессии (POST /start, /session, /meeting, корень /)
-            is_start_path = normalized_path in ("/", "/start", "/api/start", "/session", "/api/session", "/meeting", "/api/meeting")
-
-            if is_start_path:
-                is_valid, err_msg, normalized_data, missing_fields = validate_session_data(data)
-
-                if not is_valid:
-                    if not data:
-                        status_code = 422
-                        err_code = "EMPTY_JSON_OBJECT"
-                    elif missing_fields:
-                        status_code = 400
-                        err_code = "MISSING_REQUIRED_FIELDS"
-                    else:
-                        status_code = 400
-                        err_code = "INVALID_PAYLOAD"
-
-                    self._send_json_response(status_code, {
-                        "status": "error",
-                        "code": status_code,
-                        "error": err_code,
-                        "missing_fields": missing_fields,
-                        "message": err_msg,
-                        "required_fields": {
-                            "id": "Идентификатор мероприятия (например: 'мероприятие_312')",
-                            "title": "Название или тема мероприятия (например: 'Обсуждение архитектуры проекта')"
-                        },
-                        "example": EXAMPLE_SESSION_PAYLOAD
-                    })
-                    return
-
-                # Проверка занятости (уже идет запись)
-                if self.server.wrapper.is_recording_func():
-                    print(f"[REST API] Запрос отклонен: рекордер занят активной записью")
-                    self._send_json_response(409, {
-                        "status": "error",
-                        "code": "BUSY",
-                        "status_code": 409,
-                        "error": "RECORDER_BUSY",
-                        "active_recording": True,
-                        "message": "Сервер занят: в данный момент уже идет сессия записи аудио. Отправьте GET /stop для завершения текущей сессии перед началом новой."
-                    })
-                    return
-
-                print(f"[REST API] Принята новая сессия: id='{normalized_data['id']}', title='{normalized_data['title']}'")
-                
-                # Запуск записи в приложении через callback
-                if self.server.wrapper.on_session_received:
-                    self.server.wrapper.on_session_received(normalized_data)
-
-                # Ответ 200 OK при успешном получении JSON
+                if self.server.wrapper.on_show_requested:
+                    self.server.wrapper.on_show_requested()
+                print("[REST API] Show command received from JSON body")
                 self._send_json_response(200, {
                     "status": "ok",
                     "code": 200,
-                    "message": "Метаданные сессии успешно приняты. Запись звука запущена.",
-                    "id": normalized_data["id"],
-                    "title": normalized_data["title"],
-                    "date": normalized_data["date"],
-                    "participants_count": len(normalized_data.get("participants", [])),
-                    "agenda_count": len(normalized_data.get("agenda", []))
+                    "message": "shown"
                 })
                 return
 
-            # Неизвестный эндпоинт
-            self._send_json_response(404, {
-                "status": "error",
-                "code": 404,
-                "error": "NOT_FOUND",
-                "message": f"Неизвестный POST эндпоинт: '{self.path}'. Используйте POST /start для старта сессии или GET /stop для остановки."
+            # Валидация данных сессии
+            is_valid, err_msg, normalized_data, missing_fields = validate_session_data(data)
+
+            if not is_valid:
+                status_code = 422 if (not data or missing_fields) else 400
+                err_code = "MISSING_REQUIRED_FIELDS" if missing_fields else "INVALID_PAYLOAD"
+                self._send_json_response(status_code, {
+                    "status": "error",
+                    "code": status_code,
+                    "error": err_code,
+                    "missing_fields": missing_fields,
+                    "message": "invalid"
+                })
+                return
+
+            # Проверка занятости (уже идет запись)
+            if self.server.wrapper.is_recording_func():
+                print("[REST API] Request rejected: recorder busy")
+                self._send_json_response(409, {
+                    "status": "error",
+                    "code": 409,
+                    "error": "RECORDER_BUSY",
+                    "active_recording": True,
+                    "message": "busy"
+                })
+                return
+
+            print(f"[REST API] New session: id='{normalized_data['id']}', title='{normalized_data['title']}'")
+            
+            # Запуск записи в приложении через callback
+            if self.server.wrapper.on_session_received:
+                self.server.wrapper.on_session_received(normalized_data)
+
+            # Ответ 200 OK при успешном старте
+            self._send_json_response(200, {
+                "status": "ok",
+                "code": 200,
+                "message": "started",
+                "id": normalized_data["id"],
+                "title": normalized_data["title"],
+                "date": normalized_data["date"],
+                "participants_count": len(normalized_data.get("participants", [])),
+                "agenda_count": len(normalized_data.get("agenda", []))
             })
+            return
 
         except Exception as e:
-            print(f"[REST API] Внутренняя ошибка сервера: {e}")
+            print(f"[REST API] Internal server error: {e}")
             self._send_json_response(500, {
                 "status": "error",
                 "code": 500,
                 "error": "INTERNAL_SERVER_ERROR",
-                "message": f"Внутренняя ошибка сервера: {e}"
+                "message": "error"
             })
 
     def do_PUT(self):
@@ -301,12 +309,14 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             "status": "error",
             "code": 405,
             "error": "METHOD_NOT_ALLOWED",
-            "message": f"HTTP метод {self.command} не поддерживается. Разрешены только GET и POST."
+            "message": "not_allowed"
         })
 
 
 class HTTPServerWrapper(ThreadingHTTPServer):
     wrapper: 'RESTServer'
+    allow_reuse_address = True
+    daemon_threads = True
 
     def __init__(self, server_address, RequestHandlerClass, wrapper: 'RESTServer'):
         self.wrapper = wrapper
@@ -316,11 +326,10 @@ class HTTPServerWrapper(ThreadingHTTPServer):
 class RESTServer:
     """
     Легковесный многопоточный HTTP REST сервер для управления диктофоном.
-    Заменяет WebSocket:
-    - POST /start  : передать JSON метаданных совещания и начать запись
-    - GET  /stop   : остановить текущую запись
-    - GET  /status : проверить статус записи
-    - GET  /show   : развернуть окно диктофона из трея
+    - POST /start  : передать JSON метаданных совещания и начать запись -> {"status": "ok", "message": "started", ...}
+    - GET / POST /stop : остановить текущую запись -> {"status": "ok", "message": "stopped" | "idle", ...}
+    - GET  /status : проверить статус записи -> {"status": "ok", "message": "recording" | "idle", ...}
+    - GET / POST /show : развернуть окно диктофона из трея -> {"status": "ok", "message": "shown"}
     """
     def __init__(
         self,
@@ -359,8 +368,9 @@ class RESTServer:
                 self._server.serve_forever()
             except Exception as e:
                 start_error.append(str(e))
-                self.is_running = False
                 ready_event.set()
+            finally:
+                self.is_running = False
 
         self._thread = threading.Thread(target=run_server, daemon=True)
         self._thread.start()
@@ -373,15 +383,20 @@ class RESTServer:
         return self.is_running
 
     def stop(self) -> None:
-        if not self.is_running:
+        if not self.is_running and not self._server:
             return
         self.is_running = False
         if self._server:
             try:
-                shutdown_thread = threading.Thread(target=self._server.shutdown, daemon=True)
+                srv = self._server
+                self._server = None
+                shutdown_thread = threading.Thread(target=srv.shutdown, daemon=True)
                 shutdown_thread.start()
-                shutdown_thread.join(timeout=1.0)
-                self._server.server_close()
+                shutdown_thread.join(timeout=2.0)
+                srv.server_close()
             except Exception as e:
                 print(f"[REST Server] Ошибка остановки сервера: {e}")
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+            self._thread = None
         print("[REST Server] HTTP сервер остановлен")

@@ -440,14 +440,25 @@ class MainWindow(QMainWindow):
         try:
             if self.recorder and self.recorder.is_recording:
                 self._stop_recording()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[Cleanup] Ошибка при остановке записи: {ex}")
+
+        # Безопасная остановка активных воркеров выгрузки (предотвращает краш QThread при выходе)
+        try:
+            for worker in list(self.active_workers):
+                if worker.isRunning():
+                    if hasattr(worker, 'stop'):
+                        worker.stop()
+                    worker.wait(1000)
+            self.active_workers.clear()
+        except Exception as ex:
+            print(f"[Cleanup] Ошибка при остановке воркеров выгрузки: {ex}")
 
         try:
             if hasattr(self, 'server') and self.server:
                 self.server.stop()
-        except Exception:
-            pass
+        except Exception as ex:
+            print(f"[Cleanup] Ошибка при остановке сервера: {ex}")
 
         try:
             if hasattr(self, 'tray_icon') and self.tray_icon:
@@ -511,8 +522,11 @@ class MainWindow(QMainWindow):
             on_show_requested=lambda: self.bridge.show_requested.emit(),
             is_recording_func=self._is_recording_active
         )
-        self.server.start()
-        self._set_status_text("Ожидание данных мероприятия")
+        srv_ok = self.server.start()
+        if srv_ok:
+            self._set_status_text("Ожидание данных мероприятия")
+        else:
+            self._set_status_text(f"Ошибка запуска HTTP сервера на порту {self.config.http_port}")
 
     # ===============================================================
     # Обработка входящего REST JSON (Старт сессии и запись)
@@ -768,25 +782,30 @@ class MainWindow(QMainWindow):
         if not self.recorder or not self.recorder.is_recording:
             return
 
+        current_audio = self.current_filepath
+        if not current_audio or not Path(current_audio).exists():
+            print("[Record] Ошибка: текущий аудиофайл не определен")
+
         self._set_status_text("Сохранение файла...")
         self.record_timer.stop()
         duration = self.recorder.stop_recording()
 
         file_size = 0
-        if self.current_filepath and Path(self.current_filepath).exists():
-            file_size = Path(self.current_filepath).stat().st_size
+        if current_audio and Path(current_audio).exists():
+            file_size = Path(current_audio).stat().st_size
+
+        edited_title = self.title_input.text().strip() or f"Запись {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        edited_date = self.date_input.text().strip() or datetime.now().strftime("%d/%m/%Y %H:%M")
 
         # Формирование и сохранение исходного JSON-файла рядом с .webm
-        json_filepath = str(Path(self.current_filepath).with_suffix(".json"))
+        json_filepath = str(Path(current_audio).with_suffix(".json")) if current_audio else ""
         full_json = dict(self.current_meeting_data) if self.current_meeting_data else {}
         session_id = self.pending_session_id or f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         if not full_json.get("id"):
             full_json["id"] = session_id
-        if not full_json.get("title"):
-            full_json["title"] = self.title_input.text().strip() or f"Запись {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-        if not full_json.get("date"):
-            full_json["date"] = self.date_input.text().strip() or datetime.now().strftime("%d/%m/%Y %H:%M")
+        full_json["title"] = edited_title
+        full_json["date"] = edited_date
 
         parts_list = []
         for i in range(self.participants_list.count()):
@@ -795,24 +814,26 @@ class MainWindow(QMainWindow):
             full_json["participants"] = parts_list
 
         full_json["recording"] = {
-            "filename": Path(self.current_filepath).name,
+            "filename": Path(current_audio).name if current_audio else "",
             "duration": round(duration, 2),
             "file_size": file_size,
             "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-        try:
-            with open(json_filepath, "w", encoding="utf-8") as f:
-                json.dump(full_json, f, ensure_ascii=False, indent=2)
-            print(f"[Record] Сохранен JSON-пакет сессии: {json_filepath}")
-        except Exception as e:
-            print(f"[Record] Ошибка сохранения JSON файла: {e}")
+        if json_filepath:
+            try:
+                with open(json_filepath, "w", encoding="utf-8") as f:
+                    json.dump(full_json, f, ensure_ascii=False, indent=2)
+                print(f"[Record] Сохранен JSON-пакет сессии: {json_filepath}")
+            except Exception as e:
+                print(f"[Record] Ошибка сохранения JSON файла: {e}")
 
         # Обновление записи в SQLite БД
         rec_id = self.current_recording_id
         if rec_id:
             self.db.update_recording(
                 rec_id,
+                title=edited_title,
                 duration=duration,
                 file_size=file_size,
                 status=STATUS_IN_PROGRESS,
@@ -827,9 +848,9 @@ class MainWindow(QMainWindow):
         self.load_json_btn.setEnabled(True)
         self.settings_btn.setEnabled(True)
 
-        current_audio = self.current_filepath
         self.pending_session_id = None
         self.current_meeting_data = {}
+        self.current_filepath = None
 
         self._refresh_history()
 
@@ -865,6 +886,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Отправка", "Не задан URL сервера для выгрузки. Настройте его в Настройках.")
             return
 
+        # Предотвращаем дублирование одновременной отправки одной и той же записи
+        for w in self.active_workers:
+            if w.rec_id == rec_id and w.isRunning():
+                self._set_status_text(f"Запись #{rec_id} уже отправляется на сервер...")
+                return
+
         self.db.update_recording(rec_id, status=STATUS_IN_PROGRESS)
         self._refresh_history()
         self._set_status_text("Отправка данных на сервер...")
@@ -879,6 +906,7 @@ class MainWindow(QMainWindow):
         )
         worker.progress.connect(self._on_upload_progress)
         worker.finished.connect(self._on_upload_finished)
+        worker.finished.connect(worker.deleteLater)
         self.active_workers.append(worker)
         worker.start()
 
@@ -896,6 +924,7 @@ class MainWindow(QMainWindow):
         """
         new_status = STATUS_SENT if success else STATUS_NOT_SENT
         self.db.update_recording(rec_id, status=new_status)
+        self.active_workers = [w for w in self.active_workers if w.isRunning()]
         self._refresh_history()
 
         if success:
@@ -917,7 +946,7 @@ class MainWindow(QMainWindow):
 
     def _update_record_time(self) -> None:
         if self.recorder and self.recorder.is_recording:
-            elapsed = int(datetime.now().timestamp() - self.recorder.start_time)
+            elapsed = int(self.recorder.get_current_duration())
             hours = elapsed // 3600
             mins = (elapsed % 3600) // 60
             secs = elapsed % 60
@@ -1168,7 +1197,7 @@ class MainWindow(QMainWindow):
             return
         try:
             if sys.platform == "win32":
-                subprocess.run(f'explorer /select,"{str(path)}"', shell=True)
+                subprocess.Popen(["explorer", f"/select,{str(path)}"])
             elif sys.platform == "darwin":
                 subprocess.run(["open", "-R", str(path)])
             else:

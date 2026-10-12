@@ -116,7 +116,7 @@ def validate_session_data(data: Any) -> Tuple[bool, Optional[str], Optional[Dict
     if isinstance(raw_participants, list):
         for item in raw_participants:
             if isinstance(item, dict):
-                p_name = item.get("name") or item.get("fio") or item.get("fullName") or str(item)
+                p_name = item.get("name") or item.get("fio") or item.get("fullName") or item.get("user") or str(item)
                 if str(p_name).strip():
                     normalized_participants.append(str(p_name).strip())
             elif item is not None and str(item).strip():
@@ -133,9 +133,28 @@ def validate_session_data(data: Any) -> Tuple[bool, Optional[str], Optional[Dict
     if isinstance(raw_agenda, list):
         for item in raw_agenda:
             if isinstance(item, dict):
+                # Поддерживаем вопрос/тему: question, title, topic, text, name
+                q = str(
+                    item.get("question") or
+                    item.get("title") or
+                    item.get("topic") or
+                    item.get("text") or
+                    item.get("name") or
+                    ""
+                ).strip()
+                # Поддерживаем исполнителя: assignee, speaker, author, executor, responsible, person
+                a = str(
+                    item.get("assignee") or
+                    item.get("speaker") or
+                    item.get("author") or
+                    item.get("executor") or
+                    item.get("responsible") or
+                    item.get("person") or
+                    ""
+                ).strip()
                 normalized_agenda.append({
-                    "question": str(item.get("question") or item.get("title") or item.get("topic") or "").strip(),
-                    "assignee": str(item.get("assignee") or item.get("speaker") or item.get("author") or "").strip(),
+                    "question": q,
+                    "assignee": a,
                     "position": str(item.get("position") or "").strip(),
                     "department": str(item.get("department") or "").strip()
                 })

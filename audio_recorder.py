@@ -227,15 +227,30 @@ class AudioRecorder:
 
             # Block size: 960 frames = 20ms at 48000 Hz, optimal for Opus
             block_size = int(self.sample_rate * 0.02)
-            self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                device=self.device_index,
-                dtype='float32',
-                blocksize=block_size,
-                callback=self._audio_callback
-            )
-            self._stream.start()
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=self.channels,
+                    device=self.device_index,
+                    dtype='float32',
+                    blocksize=block_size,
+                    callback=self._audio_callback
+                )
+                self._stream.start()
+            except Exception as dev_err:
+                if self.device_index is not None:
+                    print(f"[AudioRecorder] Выбранное аудиоустройство (index={self.device_index}) недоступно: {dev_err}. Резервный запуск с системным микрофоном по умолчанию...")
+                    self._stream = sd.InputStream(
+                        samplerate=self.sample_rate,
+                        channels=self.channels,
+                        device=None,
+                        dtype='float32',
+                        blocksize=block_size,
+                        callback=self._audio_callback
+                    )
+                    self._stream.start()
+                else:
+                    raise
             return True
 
         except Exception as e:
@@ -348,6 +363,15 @@ class AudioRecorder:
                 self._pause_start = 0.0
             self.is_paused = False
 
+    def get_current_duration(self) -> float:
+        """Возвращает точную текущую длительность записи в секундах с учетом пауз."""
+        if not self.is_recording:
+            return getattr(self, 'elapsed_time', 0.0)
+        paused = getattr(self, 'total_paused_time', 0.0)
+        if self.is_paused and getattr(self, '_pause_start', 0.0) > 0:
+            paused += (time.time() - self._pause_start)
+        return max(0.0, (time.time() - self.start_time) - paused)
+
     def stop_recording(self) -> float:
         if not self.is_recording:
             return 0.0
@@ -403,12 +427,19 @@ class AudioRecorder:
             except Exception:
                 pass
             self._stream = None
+        if self._record_thread and self._record_thread.is_alive():
+            try:
+                self._record_thread.join(timeout=2.0)
+            except Exception:
+                pass
+            self._record_thread = None
         if self._container:
             try:
                 self._container.close()
             except Exception:
                 pass
             self._container = None
+            self._av_stream = None
 
         if self.on_level:
             try:

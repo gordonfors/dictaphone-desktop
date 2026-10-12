@@ -90,8 +90,8 @@ def load_config() -> AppConfig:
         except Exception as e:
             print(f"[Config] Error loading config file: {e}")
 
-    # Ensure recordings_dir defaults to standard AppData directory
-    if not config.recordings_dir or "Downloads" in config.recordings_dir:
+    # Ensure recordings_dir defaults to standard AppData directory if empty
+    if not config.recordings_dir or not str(config.recordings_dir).strip():
         config.recordings_dir = str(DEFAULT_RECORDINGS_DIR)
 
     Path(config.recordings_dir).mkdir(parents=True, exist_ok=True)

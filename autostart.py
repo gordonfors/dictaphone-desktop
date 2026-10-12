@@ -12,7 +12,7 @@ def set_autostart(enable: bool = True) -> bool:
     """
     executable = sys.executable
     if getattr(sys, 'frozen', False):
-        app_path = sys.executable
+        app_path = f'"{executable}"'
     else:
         app_path = f'"{executable}" "{Path(__file__).resolve().parent / "main.py"}"'
 

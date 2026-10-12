@@ -42,6 +42,12 @@ class SingleInstanceManager(QObject):
                 if last_error == ERROR_ALREADY_EXISTS:
                     print("[SingleInstance] Обнаружен работающий процесс через Mutex. Отправка сигнала раскрытия окна...")
                     self._notify_running_instance()
+                    if self._mutex_handle:
+                        try:
+                            kernel32.CloseHandle(self._mutex_handle)
+                        except Exception:
+                            pass
+                        self._mutex_handle = None
                     return True
             except Exception as e:
                 print(f"[SingleInstance] Предупреждение Mutex: {e}")
@@ -78,8 +84,11 @@ class SingleInstanceManager(QObject):
 
         # Канал 2: Локальный HTTP REST эндпоинт /show (GET)
         try:
+            from config import load_config
+            cfg = load_config()
+            port = getattr(cfg, 'http_port', 8765)
             import requests
-            requests.get("http://127.0.0.1:8765/show", timeout=0.8)
+            requests.get(f"http://127.0.0.1:{port}/show", timeout=0.8)
             return
         except Exception:
             pass

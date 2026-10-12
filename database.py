@@ -3,6 +3,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from contextlib import contextmanager
 from typing import List, Dict, Any, Optional
 
 from config import APP_DATA_DIR
@@ -18,10 +19,15 @@ class Database:
         self.db_path = db_path
         self.init_db()
 
-    def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+    @contextmanager
+    def _get_connection(self):
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(self.db_path, timeout=10.0)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def init_db(self) -> None:
         with self._get_connection() as conn:
@@ -35,6 +41,7 @@ class Database:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     duration REAL DEFAULT 0.0,
                     filepath TEXT NOT NULL,
+                    json_filepath TEXT DEFAULT '',
                     file_size INTEGER DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'Не отправлено',
                     metadata_json TEXT
@@ -95,6 +102,7 @@ class Database:
     def update_recording(
         self,
         rec_id: int,
+        title: Optional[str] = None,
         duration: Optional[float] = None,
         file_size: Optional[int] = None,
         status: Optional[str] = None,
@@ -103,6 +111,9 @@ class Database:
     ) -> None:
         updates = []
         params = []
+        if title is not None:
+            updates.append("title = ?")
+            params.append(title)
         if duration is not None:
             updates.append("duration = ?")
             params.append(duration)
@@ -161,26 +172,32 @@ class Database:
         deleted_files = []
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, filepath FROM recordings WHERE created_at < ?", (cutoff_date.strftime("%Y-%m-%d %H:%M:%S"),))
+            cursor.execute(
+                "SELECT id, filepath, json_filepath FROM recordings WHERE created_at < ? AND status != ?",
+                (cutoff_date.strftime("%Y-%m-%d %H:%M:%S"), STATUS_IN_PROGRESS)
+            )
             rows = cursor.fetchall()
             ids_to_del = []
             for row in rows:
                 ids_to_del.append(row["id"])
-                deleted_files.append(row["filepath"])
+                if row["filepath"]:
+                    deleted_files.append(row["filepath"])
+                if row["json_filepath"]:
+                    deleted_files.append(row["json_filepath"])
 
             if ids_to_del:
                 placeholders = ",".join("?" * len(ids_to_del))
                 cursor.execute(f"DELETE FROM recordings WHERE id IN ({placeholders})", ids_to_del)
                 conn.commit()
 
-        # Delete physical files (.webm and .json)
-        for fp in deleted_files:
+        # Delete physical files (.webm and .json) safely
+        for fp in set(deleted_files):
             try:
                 p = Path(fp)
-                if p.exists():
+                if p.exists() and p.is_file():
                     p.unlink()
                 p_json = p.with_suffix(".json")
-                if p_json.exists():
+                if p_json.exists() and p_json.is_file():
                     p_json.unlink()
             except Exception as e:
                 print(f"[DB] Error removing old file {fp}: {e}")
