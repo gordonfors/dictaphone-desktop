@@ -1,4 +1,4 @@
-﻿name: Build Dictaphone Windows Executable
+name: Build Dictaphone Windows Executable
 
 on:
   push:
@@ -31,6 +31,9 @@ jobs:
       - name: Build Executable via PyInstaller
         run: |
           python build.py
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
