@@ -154,10 +154,8 @@ class MainWindow(QMainWindow):
             print(f"[Purge] Ошибка очистки старых файлов: {e}")
 
     def _set_status_text(self, text: str) -> None:
-        """Централизованное обновление статус-строки (ТЗ п. 3)."""
-        host = getattr(self.config, 'http_host', '0.0.0.0')
-        port = getattr(self.config, 'http_port', 8765)
-        self.status_bar.showMessage(f"{text}  |  HTTP: http://{host}:{port}")
+        """Централизованное обновление статус-строки."""
+        self.status_bar.showMessage(text)
 
     def _init_ui(self) -> None:
         central_widget = QWidget(self)
