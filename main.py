@@ -82,13 +82,6 @@ def main():
 
     if not window.config.start_minimized:
         window.bring_to_front()
-    else:
-        window.tray_icon.showMessage(
-            "Диктофон",
-            "Приложение запущено в фоновом режиме (в трее).",
-            window.tray_icon.MessageIcon.Information,
-            2000
-        )
 
     try:
         exit_code = app.exec()

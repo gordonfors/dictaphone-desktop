@@ -485,12 +485,6 @@ class MainWindow(QMainWindow):
         if self.config.minimize_to_tray:
             event.ignore()
             self.hide()
-            self.tray_icon.showMessage(
-                "Диктофон",
-                "Программа свернута в трей и продолжает работать.",
-                QSystemTrayIcon.MessageIcon.Information,
-                1500
-            )
         else:
             self.cleanup()
             event.accept()
@@ -554,7 +548,11 @@ class MainWindow(QMainWindow):
         self.participants_list.clear()
         if isinstance(participants, list):
             for p in participants:
-                self.participants_list.addItem(str(p).strip())
+                if isinstance(p, dict):
+                    name = p.get("name") or p.get("fio") or p.get("fullName") or p.get("user") or str(p)
+                    self.participants_list.addItem(str(name).strip())
+                else:
+                    self.participants_list.addItem(str(p).strip())
         elif isinstance(participants, str):
             for p in participants.split(","):
                 if p.strip():
@@ -566,8 +564,23 @@ class MainWindow(QMainWindow):
             self.agenda_table.setRowCount(len(agenda))
             for row, item in enumerate(agenda):
                 if isinstance(item, dict):
-                    q = str(item.get("question", ""))
-                    a = str(item.get("assignee", ""))
+                    q = str(
+                        item.get("question") or
+                        item.get("title") or
+                        item.get("topic") or
+                        item.get("text") or
+                        item.get("name") or
+                        ""
+                    )
+                    a = str(
+                        item.get("executor") or
+                        item.get("assignee") or
+                        item.get("speaker") or
+                        item.get("author") or
+                        item.get("responsible") or
+                        item.get("person") or
+                        ""
+                    )
                     pos = str(item.get("position", ""))
                     dep = str(item.get("department", ""))
                 else:
@@ -795,22 +808,33 @@ class MainWindow(QMainWindow):
         edited_title = self.title_input.text().strip() or f"Запись {datetime.now().strftime('%d.%m.%Y %H:%M')}"
         edited_date = self.date_input.text().strip() or datetime.now().strftime("%d/%m/%Y %H:%M")
 
-        # Формирование и сохранение исходного JSON-файла рядом с .webm
+        # Формирование и сохранение JSON-файла рядом с .webm:
+        # Вписываем данные записи в исходный JSON пользователя, а не создаем новый
         json_filepath = str(Path(current_audio).with_suffix(".json")) if current_audio else ""
-        full_json = dict(self.current_meeting_data) if self.current_meeting_data else {}
+        import copy
+        full_json = copy.deepcopy(self.current_meeting_data) if self.current_meeting_data else {}
         session_id = self.pending_session_id or f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         if not full_json.get("id"):
             full_json["id"] = session_id
-        full_json["title"] = edited_title
-        full_json["date"] = edited_date
 
-        parts_list = []
-        for i in range(self.participants_list.count()):
-            parts_list.append(self.participants_list.item(i).text())
+        if "title" not in full_json:
+            full_json["title"] = edited_title
+        elif edited_title and edited_title != str(full_json.get("title", "")).strip():
+            full_json["title"] = edited_title
+
+        if "date" not in full_json:
+            full_json["date"] = edited_date
+        elif edited_date and edited_date != str(full_json.get("date", "")).strip():
+            full_json["date"] = edited_date
+
         if not full_json.get("participants"):
+            parts_list = []
+            for i in range(self.participants_list.count()):
+                parts_list.append(self.participants_list.item(i).text())
             full_json["participants"] = parts_list
 
+        # Вписываем блок информации о записи звука в исходный JSON
         full_json["recording"] = {
             "filename": Path(current_audio).name if current_audio else "",
             "duration": round(duration, 2),

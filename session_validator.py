@@ -102,89 +102,14 @@ def validate_session_data(data: Any) -> Tuple[bool, Optional[str], Optional[Dict
         )
         return False, msg, None, missing_fields
 
-    # 3. Нормализация даты
-    raw_date = data.get("date")
-    if not raw_date or not str(raw_date).strip():
-        date_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    else:
-        date_str = str(raw_date).strip()
+    # 3. Сохраняем исходный JSON пользователя без искажения структуры, типов и ключей.
+    # Мы вписываем данные в существующий JSON, а не создаем синтетический объект и не заменяем ключи пользователя.
+    import copy
+    result = copy.deepcopy(data)
+    result["id"] = id_str
+    if "title" not in result or not str(result["title"]).strip():
+        result["title"] = title_str
+    if "date" not in result or not str(result.get("date", "")).strip():
+        result["date"] = datetime.now().strftime("%d/%m/%Y %H:%M")
 
-    # 4. Нормализация участников (participants)
-    raw_participants = data.get("participants", [])
-    normalized_participants: List[str] = []
-
-    if isinstance(raw_participants, list):
-        for item in raw_participants:
-            if isinstance(item, dict):
-                p_name = item.get("name") or item.get("fio") or item.get("fullName") or item.get("user") or str(item)
-                if str(p_name).strip():
-                    normalized_participants.append(str(p_name).strip())
-            elif item is not None and str(item).strip():
-                normalized_participants.append(str(item).strip())
-    elif isinstance(raw_participants, str):
-        for p in raw_participants.split(","):
-            if p.strip():
-                normalized_participants.append(p.strip())
-
-    # 5. Нормализация повестки дня (agenda)
-    raw_agenda = data.get("agenda", [])
-    normalized_agenda: List[Dict[str, str]] = []
-
-    if isinstance(raw_agenda, list):
-        for item in raw_agenda:
-            if isinstance(item, dict):
-                # Поддерживаем вопрос/тему: question, title, topic, text, name
-                q = str(
-                    item.get("question") or
-                    item.get("title") or
-                    item.get("topic") or
-                    item.get("text") or
-                    item.get("name") or
-                    ""
-                ).strip()
-                # Поддерживаем исполнителя: assignee, speaker, author, executor, responsible, person
-                a = str(
-                    item.get("assignee") or
-                    item.get("speaker") or
-                    item.get("author") or
-                    item.get("executor") or
-                    item.get("responsible") or
-                    item.get("person") or
-                    ""
-                ).strip()
-                normalized_agenda.append({
-                    "question": q,
-                    "assignee": a,
-                    "position": str(item.get("position") or "").strip(),
-                    "department": str(item.get("department") or "").strip()
-                })
-            elif isinstance(item, str) and item.strip():
-                normalized_agenda.append({
-                    "question": item.strip(),
-                    "assignee": "",
-                    "position": "",
-                    "department": ""
-                })
-    elif isinstance(raw_agenda, str) and raw_agenda.strip():
-        normalized_agenda.append({
-            "question": raw_agenda.strip(),
-            "assignee": "",
-            "position": "",
-            "department": ""
-        })
-
-    # Сборка итогового нормализованного объекта
-    normalized: Dict[str, Any] = {
-        "id": id_str,
-        "title": title_str,
-        "date": date_str,
-        "participants": normalized_participants,
-        "agenda": normalized_agenda
-    }
-
-    # Сохраняем дополнительные пользовательские поля без изменений
-    for k, v in data.items():
-        if k not in normalized:
-            normalized[k] = v
-
-    return True, None, normalized, []
+    return True, None, result, []
