@@ -873,6 +873,7 @@ class MainWindow(QMainWindow):
         self.pending_session_id = None
         self.current_meeting_data = {}
         self.current_filepath = None
+        self.current_recording_id = None
 
         self._refresh_history()
 
@@ -924,7 +925,8 @@ class MainWindow(QMainWindow):
             json_path=json_path,
             upload_url=self.config.upload_url,
             max_retries=self.config.max_upload_retries,
-            verify_ssl=getattr(self.config, 'verify_ssl', False)
+            verify_ssl=getattr(self.config, 'verify_ssl', False),
+            db=self.db
         )
         worker.progress.connect(self._on_upload_progress)
         worker.finished.connect(self._on_upload_finished)

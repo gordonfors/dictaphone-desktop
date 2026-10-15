@@ -78,16 +78,22 @@ class SettingsDialog(QDialog):
         net_layout.setSpacing(10)
 
         # HTTP Server group
-        http_group = QGroupBox("Порт")
+        http_group = QGroupBox("Локальный REST API сервер управления")
         http_layout = QVBoxLayout(http_group)
 
         http_port_row = QHBoxLayout()
         http_port_row.addWidget(QLabel("Порт:"))
         self.http_port_spin = QSpinBox()
         self.http_port_spin.setRange(1024, 65535)
+        self.http_port_spin.valueChanged.connect(self._update_lan_info)
         http_port_row.addWidget(self.http_port_spin)
         http_port_row.addStretch()
         http_layout.addLayout(http_port_row)
+
+        self.lan_info_label = QLabel()
+        self.lan_info_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.lan_info_label.setStyleSheet("color: #38bdf8; font-size: 12px; padding: 2px 0;")
+        http_layout.addWidget(self.lan_info_label)
 
         net_layout.addWidget(http_group)
 
@@ -220,6 +226,7 @@ class SettingsDialog(QDialog):
         self._load_devices()
 
         self._update_protocol_badge()
+        self._update_lan_info()
 
     def _load_devices(self) -> None:
         self.device_combo.blockSignals(True)
@@ -260,6 +267,22 @@ class SettingsDialog(QDialog):
                 "background-color: #451a03; color: #fdba74; border: 1px solid #d97706; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 11px;"
             )
 
+    def _get_lan_ip(self) -> str:
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "127.0.0.1"
+
+    def _update_lan_info(self) -> None:
+        port = self.http_port_spin.value() if hasattr(self, 'http_port_spin') else 8765
+        ip = self._get_lan_ip()
+        if hasattr(self, 'lan_info_label'):
+            self.lan_info_label.setText(f"Адрес для команд в локальной сети: <b>http://{ip}:{port}</b>")
 
     def _browse_dir(self) -> None:
         curr = self.dir_input.text()
