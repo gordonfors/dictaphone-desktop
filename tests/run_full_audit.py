@@ -74,13 +74,27 @@ class TestSessionValidator(unittest.TestCase):
         self.assertEqual(norm["title"], "Стратегическое планирование")
         self.assertEqual(norm["custom_field"], 12345, "Пользовательские поля должны сохраняться")
 
-    def test_synonyms_support(self):
+    def test_required_id_and_title(self):
+        # Если отсутствуют обязательные поля 'id' или 'title', сообщаем что JSON не тот
         data = {
             "meeting_id": "session_999",
             "conference": "Обсуждение бюджета"
         }
         ok, err, norm, missing = validate_session_data(data)
+        self.assertFalse(ok)
+        self.assertIn("JSON не тот", err)
+        self.assertIn("id", missing)
+        self.assertIn("title", missing)
+
+        # Тест на пригодность: поля не синтезируются и не добавляются
+        valid_data = {
+            "id": "session_999",
+            "title": "Обсуждение бюджета",
+            "custom_number": 42
+        }
+        ok, err, norm, missing = validate_session_data(valid_data)
         self.assertTrue(ok)
+        self.assertNotIn("date", norm, "Поле date не должно синтезироваться, если его не было")
         self.assertEqual(norm["id"], "session_999")
         self.assertEqual(norm["title"], "Обсуждение бюджета")
 

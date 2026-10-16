@@ -278,11 +278,11 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                 "status": "ok",
                 "code": 200,
                 "message": "started",
-                "id": normalized_data["id"],
-                "title": normalized_data["title"],
-                "date": normalized_data["date"],
-                "participants_count": len(normalized_data.get("participants", [])),
-                "agenda_count": len(normalized_data.get("agenda", []))
+                "id": str(normalized_data.get("id", "")),
+                "title": str(normalized_data.get("title", "")),
+                "date": str(normalized_data.get("date", "")),
+                "participants_count": len(normalized_data["participants"]) if isinstance(normalized_data.get("participants"), (list, dict)) else 0,
+                "agenda_count": len(normalized_data["agenda"]) if isinstance(normalized_data.get("agenda"), (list, dict)) else 0
             })
             return
 

@@ -24,27 +24,25 @@ EXAMPLE_SESSION_PAYLOAD = {
 
 def validate_session_data(data: Any) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]], List[str]]:
     """
-    Валидирует и нормализует JSON-пакет данных мероприятия.
+    Валидирует JSON-пакет данных мероприятия на пригодность.
     
-    Проверяет:
+    Тест на пригодность:
     1. Корневой элемент должен быть объектом (dict).
     2. Объект не должен быть пустым {}.
-    3. Наличие и непустоту 'id' (идентификатор мероприятия).
-    4. Наличие и непустоту 'title' (название мероприятия).
-       Поддерживает дружелюбные синонимы ('conference', 'name', 'topic').
-    5. Корректность типов полей (не допускает dict/list в id и title).
-    6. Безопасную нормализацию 'date', 'participants' и 'agenda'.
+    3. Обязательное наличие непустых полей 'id' и 'title'.
+       Если полей нет — "JSON не тот".
+    4. Поля не синтезируются и не добавляются (исходный JSON не модифицируется).
 
     Возвращает:
-        (is_valid, error_message, normalized_dict, missing_fields)
+        (is_valid, error_message, raw_data_copy, missing_fields)
     """
     if not isinstance(data, dict):
         type_name = type(data).__name__
-        msg = f"Корневой элемент JSON должен быть объектом {{...}}, а получен: {type_name}."
+        msg = f"JSON не тот: корневой элемент должен быть объектом {{...}}, а получен: {type_name}."
         return False, msg, None, []
 
     if not data:
-        msg = "Передан пустой JSON объект {}. Заполните обязательные поля: 'id' (идентификатор) и 'title' (название мероприятия)."
+        msg = "JSON не тот: передан пустой JSON объект. Обязательны поля 'id' и 'title'."
         return False, msg, None, ["id", "title"]
 
     missing_fields: List[str] = []
@@ -52,64 +50,29 @@ def validate_session_data(data: Any) -> Tuple[bool, Optional[str], Optional[Dict
     # 1. Проверка идентификатора 'id'
     raw_id = data.get("id")
     if raw_id is None:
-        # Проверяем возможные синонимы
-        raw_id = data.get("session_id") or data.get("meeting_id")
-
-    id_str = ""
-    if raw_id is None:
         missing_fields.append("id")
     elif isinstance(raw_id, (dict, list)):
-        return False, f"Поле 'id' должно быть строковым или числовым идентификатором, а не {type(raw_id).__name__}.", None, []
-    else:
-        id_str = str(raw_id).strip()
-        if not id_str:
-            missing_fields.append("id")
+        return False, f"JSON не тот: поле 'id' не должно быть {type(raw_id).__name__}.", None, []
+    elif not str(raw_id).strip():
+        missing_fields.append("id")
 
-    # 2. Проверка названия конференции / темы совещания 'title'
+    # 2. Проверка названия мероприятия 'title'
     raw_title = data.get("title")
-    if raw_title is None or (isinstance(raw_title, str) and not raw_title.strip()):
-        # Проверяем синонимы: conference, conference_name, name, topic, subject
-        for alias in ("conference", "conference_name", "name", "topic", "subject"):
-            val = data.get(alias)
-            if val is not None and str(val).strip():
-                raw_title = val
-                break
-
-    title_str = ""
     if raw_title is None:
         missing_fields.append("title")
     elif isinstance(raw_title, (dict, list)):
-        return False, f"Поле 'title' (название конференции) должно быть строкой, а не {type(raw_title).__name__}.", None, []
-    else:
-        title_str = str(raw_title).strip()
-        if not title_str:
-            missing_fields.append("title")
+        return False, f"JSON не тот: поле 'title' не должно быть {type(raw_title).__name__}.", None, []
+    elif not str(raw_title).strip():
+        missing_fields.append("title")
 
     # Если отсутствуют обязательные поля
     if missing_fields:
-        fields_desc = []
-        for f in missing_fields:
-            if f == "id":
-                fields_desc.append("'id' (идентификатор мероприятия)")
-            elif f == "title":
-                fields_desc.append("'title' (название мероприятия)")
-            else:
-                fields_desc.append(f"'{f}'")
-
-        msg = (
-            f"Отсутствуют обязательные поля в JSON пакете: {', '.join(fields_desc)}. "
-            f"Оба поля обязательны и не могут быть пустыми."
-        )
+        fields_desc = ", ".join(f"'{f}'" for f in missing_fields)
+        msg = f"JSON не тот: отсутствуют обязательные поля {fields_desc}."
         return False, msg, None, missing_fields
 
-    # 3. Сохраняем исходный JSON пользователя без искажения структуры, типов и ключей.
-    # Мы вписываем данные в существующий JSON, а не создаем синтетический объект и не заменяем ключи пользователя.
+    # Тест на пригодность успешно пройден.
+    # Мы не добавляем и не меняем поля пользователя, сохраняя структуру 1:1.
     import copy
-    result = copy.deepcopy(data)
-    result["id"] = id_str
-    if "title" not in result or not str(result["title"]).strip():
-        result["title"] = title_str
-    if "date" not in result or not str(result.get("date", "")).strip():
-        result["date"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+    return True, None, copy.deepcopy(data), []
 
-    return True, None, result, []

@@ -809,32 +809,22 @@ class MainWindow(QMainWindow):
         edited_date = self.date_input.text().strip() or datetime.now().strftime("%d/%m/%Y %H:%M")
 
         # Формирование и сохранение JSON-файла рядом с .webm:
-        # Вписываем данные записи в исходный JSON пользователя, а не создаем новый
+        # Вариант А: помещаем наши данные о записи в исходный JSON под ключом "recording",
+        # не модифицируя и не синтезируя пользовательские поля
         json_filepath = str(Path(current_audio).with_suffix(".json")) if current_audio else ""
         import copy
         full_json = copy.deepcopy(self.current_meeting_data) if self.current_meeting_data else {}
         session_id = self.pending_session_id or f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        if not full_json.get("id"):
-            full_json["id"] = session_id
+        if not full_json:
+            # Если запись запущена локально вручную кнопкой без входящего REST JSON
+            full_json = {
+                "id": session_id,
+                "title": edited_title,
+                "date": edited_date
+            }
 
-        if "title" not in full_json:
-            full_json["title"] = edited_title
-        elif edited_title and edited_title != str(full_json.get("title", "")).strip():
-            full_json["title"] = edited_title
-
-        if "date" not in full_json:
-            full_json["date"] = edited_date
-        elif edited_date and edited_date != str(full_json.get("date", "")).strip():
-            full_json["date"] = edited_date
-
-        if not full_json.get("participants"):
-            parts_list = []
-            for i in range(self.participants_list.count()):
-                parts_list.append(self.participants_list.item(i).text())
-            full_json["participants"] = parts_list
-
-        # Вписываем блок информации о записи звука в исходный JSON
+        # Вариант А: помещаем наши данные о записи в исходный JSON
         full_json["recording"] = {
             "filename": Path(current_audio).name if current_audio else "",
             "duration": round(duration, 2),
