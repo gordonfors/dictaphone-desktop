@@ -25,7 +25,7 @@ def build():
     args = [
         str(BASE_DIR / "main.py"),
         "--noconfirm",
-        "--onefile",
+        "--onedir",
         "--windowed",
         "--name=Dictaphone",
         f"--icon={icon_path}",
@@ -39,7 +39,7 @@ def build():
 
     print("[Build] PyInstaller options:", " ".join(args))
     PyInstaller.__main__.run(args)
-    print("\n[Build] Application build completed successfully! Executable: dist/Dictaphone.exe")
+    print("\n[Build] Application build completed successfully! Executable: dist/Dictaphone/Dictaphone.exe")
 
 if __name__ == "__main__":
     build()

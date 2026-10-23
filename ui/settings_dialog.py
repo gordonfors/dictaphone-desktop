@@ -1,8 +1,9 @@
 from pathlib import Path
+import uuid
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QSpinBox, QCheckBox, QPushButton, QFileDialog, QGroupBox,
-    QTabWidget, QWidget, QMessageBox, QComboBox
+    QTabWidget, QWidget, QMessageBox, QComboBox, QAbstractSpinBox
 )
 from PyQt6.QtCore import Qt
 
@@ -85,6 +86,7 @@ class SettingsDialog(QDialog):
         http_port_row.addWidget(QLabel("Порт:"))
         self.http_port_spin = QSpinBox()
         self.http_port_spin.setRange(1024, 65535)
+        self.http_port_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.http_port_spin.valueChanged.connect(self._update_lan_info)
         http_port_row.addWidget(self.http_port_spin)
         http_port_row.addStretch()
@@ -305,8 +307,23 @@ class SettingsDialog(QDialog):
         # Storage
         rec_dir = self.dir_input.text().strip()
         if rec_dir:
-            Path(rec_dir).mkdir(parents=True, exist_ok=True)
-            self.config.recordings_dir = rec_dir
+            try:
+                # Проверка прав на создание папки и запись (UX/Логика багфикс)
+                target_path = Path(rec_dir)
+                target_path.mkdir(parents=True, exist_ok=True)
+                test_file = target_path / f".test_write_{uuid.uuid4().hex}"
+                test_file.write_text("test")
+                test_file.unlink()
+                self.config.recordings_dir = rec_dir
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Ошибка доступа",
+                    f"Нет прав на запись в указанную директорию:\n{rec_dir}\n\n"
+                    "Пожалуйста, выберите другую папку или запустите программу от имени Администратора."
+                )
+                return
+
         self.config.max_storage_days = self.days_spin.value()
 
         # Network

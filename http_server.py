@@ -25,7 +25,10 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.end_headers()
-        self.wfile.write(response_bytes)
+        try:
+            self.wfile.write(response_bytes)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def do_OPTIONS(self):
         # Поддержка CORS preflight запросов
@@ -69,7 +72,11 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
         if normalized_path in ("/stop", "/api/stop"):
             is_currently_recording = self.server.wrapper.is_recording_func()
             if self.server.wrapper.on_stop_requested:
-                self.server.wrapper.on_stop_requested()
+                import threading
+                ev = threading.Event()
+                self.server.wrapper.on_stop_requested(ev)
+                ev.wait(timeout=3.0)
+
             print("[REST API] Stop command received (GET /stop)")
             self._send_json_response(200, {
                 "status": "ok",
@@ -108,7 +115,11 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             if normalized_path in ("/stop", "/api/stop"):
                 is_currently_recording = self.server.wrapper.is_recording_func()
                 if self.server.wrapper.on_stop_requested:
-                    self.server.wrapper.on_stop_requested()
+                    import threading
+                    ev = threading.Event()
+                    self.server.wrapper.on_stop_requested(ev)
+                    ev.wait(timeout=3.0)
+
                 print("[REST API] Stop command received (POST /stop)")
                 self._send_json_response(200, {
                     "status": "ok",
@@ -174,7 +185,19 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            body = self.rfile.read(content_length)
+            # Установка таймаута на чтение, чтобы предотвратить зависание потока (Slowloris атаки)
+            try:
+                self.connection.settimeout(5.0)
+                body = self.rfile.read(content_length)
+            except Exception as e:
+                self._send_json_response(408, {
+                    "status": "error",
+                    "code": 408,
+                    "error": "REQUEST_TIMEOUT",
+                    "message": "timeout"
+                })
+                return
+
             if not body or not body.strip():
                 self._send_json_response(400, {
                     "status": "error",
@@ -218,7 +241,11 @@ class DictaphoneHTTPHandler(BaseHTTPRequestHandler):
             if data.get("command") == "stop" or data.get("action") == "stop":
                 is_currently_recording = self.server.wrapper.is_recording_func()
                 if self.server.wrapper.on_stop_requested:
-                    self.server.wrapper.on_stop_requested()
+                    import threading
+                    ev = threading.Event()
+                    self.server.wrapper.on_stop_requested(ev)
+                    ev.wait(timeout=3.0)
+
                 print("[REST API] Stop command received from JSON body")
                 self._send_json_response(200, {
                     "status": "ok",
@@ -336,7 +363,7 @@ class RESTServer:
         host: str = "0.0.0.0",
         port: int = 8765,
         on_session_received: Optional[Callable[[Dict[str, Any]], None]] = None,
-        on_stop_requested: Optional[Callable[[], None]] = None,
+        on_stop_requested: Optional[Callable[[Any], None]] = None,
         on_show_requested: Optional[Callable[[], None]] = None,
         is_recording_func: Optional[Callable[[], bool]] = None
     ):

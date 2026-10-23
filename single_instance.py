@@ -1,5 +1,6 @@
 import sys
 import ctypes
+import logging
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 
@@ -45,12 +46,12 @@ class SingleInstanceManager(QObject):
                     if self._mutex_handle:
                         try:
                             kernel32.CloseHandle(self._mutex_handle)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logging.warning(f"[SingleInstance] Не удалось закрыть Mutex: {e}")
                         self._mutex_handle = None
                     return True
             except Exception as e:
-                print(f"[SingleInstance] Предупреждение Mutex: {e}")
+                logging.warning(f"[SingleInstance] Ошибка при создании Mutex: {e}")
 
         # 2. Проверка через QLocalSocket (межпроцессный локальный сокет)
         socket = QLocalSocket()
@@ -79,8 +80,8 @@ class SingleInstanceManager(QObject):
                 s.waitForReadyRead(100)
                 s.disconnectFromServer()
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"[SingleInstance] QLocalSocket notify failed: {e}")
 
         # Канал 2: Локальный HTTP REST эндпоинт /show (GET)
         try:
@@ -90,8 +91,8 @@ class SingleInstanceManager(QObject):
             import requests
             requests.get(f"http://127.0.0.1:{port}/show", timeout=0.8)
             return
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"[SingleInstance] HTTP notify failed: {e}")
 
         # Канал 3: Прямой вызов WinAPI ShowWindow
         if sys.platform == "win32":
@@ -101,8 +102,8 @@ class SingleInstanceManager(QObject):
                 if hwnd:
                     user32.ShowWindow(hwnd, 9)  # SW_RESTORE
                     user32.SetForegroundWindow(hwnd)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug(f"[SingleInstance] WinAPI notify failed: {e}")
 
     def start_listener(self) -> bool:
         """

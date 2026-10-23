@@ -102,7 +102,9 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig) -> None:
     try:
         Path(CONFIG_FILE).parent.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        tmp_file = Path(CONFIG_FILE).with_suffix(".json.tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(asdict(config), f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, CONFIG_FILE)
     except Exception as e:
         print(f"[Config] Error saving config file: {e}")

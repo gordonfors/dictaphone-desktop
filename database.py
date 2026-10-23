@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import contextmanager
@@ -17,17 +18,35 @@ STATUS_IN_PROGRESS = "В процессе"
 class Database:
     def __init__(self, db_path: Path = DB_FILE):
         self.db_path = db_path
+        self._conn = None
+        self._lock = threading.RLock()
         self.init_db()
+
+    def _get_connection_obj(self):
+        if self._conn is None:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(self.db_path, timeout=10.0, check_same_thread=False)
+            self._conn.row_factory = sqlite3.Row
+        return self._conn
+
+    def close(self):
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     @contextmanager
     def _get_connection(self):
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+        with self._lock:
+            try:
+                yield self._get_connection_obj()
+            except Exception:
+                if self._conn:
+                    self._conn.rollback()
+                raise
 
     def init_db(self) -> None:
         with self._get_connection() as conn:
@@ -59,8 +78,9 @@ class Database:
                 cursor.execute("ALTER TABLE recordings ADD COLUMN json_filepath TEXT DEFAULT ''")
                 conn.commit()
 
-            # Normalize any legacy status values
+            # Normalize any legacy status values and reset stuck IN_PROGRESS
             cursor.execute("UPDATE recordings SET status = 'Не отправлено' WHERE status IN ('Локально', 'Ошибка')")
+            cursor.execute("UPDATE recordings SET status = ? WHERE status = ?", (STATUS_NOT_SENT, STATUS_IN_PROGRESS))
             conn.commit()
 
     def add_recording(
@@ -140,10 +160,11 @@ class Database:
             cursor.execute(sql, params)
             conn.commit()
 
-    def get_all_recordings(self) -> List[Dict[str, Any]]:
+    def get_all_recordings(self, limit: int = 200) -> List[Dict[str, Any]]:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM recordings ORDER BY id DESC")
+            # Ограничиваем выборку последних 200 записей для защиты ОЗУ и UI от переполнения
+            cursor.execute("SELECT * FROM recordings ORDER BY id DESC LIMIT ?", (limit,))
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -200,6 +221,8 @@ class Database:
                 if p_json.exists() and p_json.is_file():
                     p_json.unlink()
             except Exception as e:
+                with open("app_errors.log", "a", encoding="utf-8") as err_log:
+                    err_log.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - [DB] Error removing old file {fp}: {e}\n")
                 print(f"[DB] Error removing old file {fp}: {e}")
 
         return deleted_files

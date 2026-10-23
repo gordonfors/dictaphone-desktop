@@ -298,7 +298,7 @@ class TestHTTPServer(unittest.TestCase):
             host="127.0.0.1",
             port=self.port,
             on_session_received=lambda data: setattr(self, 'received_session', data),
-            on_stop_requested=lambda: setattr(self, 'stop_called', True),
+            on_stop_requested=lambda ev=None: (setattr(self, 'stop_called', True), ev.set() if ev else None),
             on_show_requested=lambda: setattr(self, 'show_called', True),
             is_recording_func=lambda: self.is_rec
         )
@@ -444,17 +444,17 @@ class TestUploader(unittest.TestCase):
         self.assertTrue(success_result[0][0], f"Отправка должна завершиться успехом: {success_result[0][1]}")
 
         # Проверка принятых файлов
-        self.assertIn("audio", self.received_files, "Файл аудио должен быть среди файлов")
-        self.assertEqual(self.received_files["audio"][0], "rec_meeting_1.webm")
-        self.assertEqual(self.received_files["audio"][1], b"MOCK_WEBM_DATA_12345")
+        self.assertIn("file", self.received_files, "Файл аудио должен быть среди файлов")
+        self.assertEqual(self.received_files["file"][0], "rec_meeting_1.webm")
+        self.assertEqual(self.received_files["file"][1], b"MOCK_WEBM_DATA_12345")
 
-        self.assertIn("json", self.received_files, "Файл JSON должен быть среди файлов")
-        self.assertEqual(self.received_files["json"][0], "rec_meeting_1.json")
-        self.assertIn("Тестовое мероприятие", self.received_files["json"][1].decode('utf-8'))
+        self.assertIn("json_file", self.received_files, "Файл JSON должен быть среди файлов")
+        self.assertEqual(self.received_files["json_file"][0], "rec_meeting_1.json")
+        self.assertIn("Тестовое мероприятие", self.received_files["json_file"][1].decode('utf-8'))
 
         # Проверка принятых текстовых полей формы (Body)
-        self.assertIn("json", self.received_fields, "JSON должен быть продублирован в body")
-        self.assertIn("Тестовое мероприятие", self.received_fields["json"])
+        self.assertIn("payload", self.received_fields, "JSON должен быть продублирован в body")
+        self.assertIn("Тестовое мероприятие", self.received_fields["payload"])
         self.assertEqual(self.received_fields["id"], "meeting-1")
         self.assertEqual(self.received_fields["title"], "Тестовое мероприятие")
 
@@ -494,7 +494,7 @@ class TestUploader(unittest.TestCase):
             self.assertIn("title", self.received_fields)
             self.assertEqual(self.received_fields["title"], "Восстановленная тема")
             self.assertEqual(self.received_fields["id"], "recovered_id")
-            self.assertIn("json", self.received_files)
+            self.assertIn("json_file", self.received_files)
         finally:
             database.DB_FILE = old_db_file
 

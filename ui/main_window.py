@@ -31,6 +31,7 @@ class RecorderBridge(QObject):
     error_occurred = pyqtSignal(str)
     session_received = pyqtSignal(dict)
     stop_requested = pyqtSignal()
+    stop_requested_with_event = pyqtSignal(object)
     show_requested = pyqtSignal()
 
 
@@ -104,6 +105,7 @@ class MainWindow(QMainWindow):
         self.bridge.error_occurred.connect(self._on_audio_error)
         self.bridge.session_received.connect(self._on_session_received)
         self.bridge.stop_requested.connect(self._on_stop_requested)
+        self.bridge.stop_requested_with_event.connect(self._on_stop_requested_with_event)
         self.bridge.show_requested.connect(self.bring_to_front)
 
         # Аудио рекордер
@@ -133,7 +135,7 @@ class MainWindow(QMainWindow):
             host=self.config.http_host,
             port=self.config.http_port,
             on_session_received=lambda data: self.bridge.session_received.emit(data),
-            on_stop_requested=lambda: self.bridge.stop_requested.emit(),
+            on_stop_requested=lambda ev: self.bridge.stop_requested_with_event.emit(ev),
             on_show_requested=lambda: self.bridge.show_requested.emit(),
             is_recording_func=self._is_recording_active
         )
@@ -148,10 +150,13 @@ class MainWindow(QMainWindow):
 
     def _purge_old_files(self) -> None:
         """Очистка старых файлов старше max_storage_days по БД и на диске."""
-        try:
-            self.db.purge_old_recordings(self.config.max_storage_days)
-        except Exception as e:
-            print(f"[Purge] Ошибка очистки старых файлов: {e}")
+        import threading
+        def worker():
+            try:
+                self.db.purge_old_recordings(self.config.max_storage_days)
+            except Exception as e:
+                print(f"[Purge] Ошибка очистки старых файлов: {e}")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _set_status_text(self, text: str) -> None:
         """Централизованное обновление статус-строки."""
@@ -381,7 +386,7 @@ class MainWindow(QMainWindow):
         show_action.triggered.connect(self._show_window)
 
         self.tray_stop_action = QAction("Остановить запись", self)
-        self.tray_stop_action.triggered.connect(self._stop_recording)
+        self.tray_stop_action.triggered.connect(self._confirm_stop_recording)
         self.tray_stop_action.setEnabled(False)
 
         settings_action = QAction("Настройки...", self)
@@ -464,6 +469,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+        try:
+            if hasattr(self, 'db') and self.db:
+                self.db.close()
+        except Exception as ex:
+            print(f"[Cleanup] Ошибка при закрытии БД: {ex}")
+
     def _force_quit(self) -> None:
         if self.recorder and self.recorder.is_recording:
             reply = QMessageBox.question(
@@ -510,7 +521,7 @@ class MainWindow(QMainWindow):
             host=self.config.http_host,
             port=self.config.http_port,
             on_session_received=lambda data: self.bridge.session_received.emit(data),
-            on_stop_requested=lambda: self.bridge.stop_requested.emit(),
+            on_stop_requested=lambda ev: self.bridge.stop_requested_with_event.emit(ev),
             on_show_requested=lambda: self.bridge.show_requested.emit(),
             is_recording_func=self._is_recording_active
         )
@@ -527,6 +538,11 @@ class MainWindow(QMainWindow):
         """
         Триггер №2 ротации и автоматический старт записи звука.
         """
+        # Если запись уже идет, игнорируем новый JSON чтобы не смешать данные
+        if self._is_recording_active():
+            print("[REST] Получен новый пакет сессии, но запись уже идет. Игнорируем.")
+            return
+
         # 1. Ротация старых файлов строго перед стартом новой записи (ТЗ п. 2.3)
         self._purge_old_files()
 
@@ -610,6 +626,12 @@ class MainWindow(QMainWindow):
         """Команда остановки по WS (ТЗ п. 2.1)."""
         if self.recorder and self.recorder.is_recording:
             self._stop_recording()
+
+    def _on_stop_requested_with_event(self, ev) -> None:
+        if self.recorder and self.recorder.is_recording:
+            self._stop_recording()
+        if ev:
+            ev.set()
 
     def _load_json_file(self) -> None:
         """Тестовая загрузка JSON из файла с проверками и ответами на ошибки пользователя."""
@@ -708,13 +730,19 @@ class MainWindow(QMainWindow):
             self.id_input.setText(id_val)
 
         self.pending_session_id = id_val
-        self.current_meeting_data = {
-            "id": id_val,
-            "title": title,
-            "date": date_val,
-            "participants": [self.participants_list.item(i).text() for i in range(self.participants_list.count())],
-            "agenda": []
-        }
+
+        # Обновляем текущие данные вместо полной перезаписи (сохраняет кастомные поля JSON)
+        if not self.current_meeting_data:
+            self.current_meeting_data = {}
+
+        self.current_meeting_data["id"] = id_val
+        self.current_meeting_data["title"] = title
+        self.current_meeting_data["date"] = date_val
+        self.current_meeting_data["participants"] = [self.participants_list.item(i).text() for i in range(self.participants_list.count())]
+
+        if "agenda" not in self.current_meeting_data:
+            self.current_meeting_data["agenda"] = []
+
         self._start_recording()
 
     def _start_recording(self) -> None:
@@ -789,6 +817,27 @@ class MainWindow(QMainWindow):
         self._set_status_text("Идет запись...")
         self.record_timer.start()
 
+    def _confirm_stop_recording(self) -> None:
+        """Показывает диалог подтверждения перед остановкой записи (из UI)."""
+        if not self.recorder or not self.recorder.is_recording:
+            return
+
+        self.bring_to_front()
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Подтверждение")
+        box.setText("Остановить запись и отправить на обработку?")
+        box.setIcon(QMessageBox.Icon.Question)
+
+        btn_continue = box.addButton("Продолжить запись", QMessageBox.ButtonRole.RejectRole)
+        btn_stop = box.addButton("Завершить и отправить", QMessageBox.ButtonRole.AcceptRole)
+
+        box.setDefaultButton(btn_continue)
+        box.exec()
+
+        if box.clickedButton() == btn_stop:
+            self._stop_recording()
+
     def _stop_recording(self) -> None:
         if not self.recorder or not self.recorder.is_recording:
             return
@@ -811,10 +860,14 @@ class MainWindow(QMainWindow):
         # Формирование и сохранение JSON-файла рядом с .webm:
         # Вариант А: помещаем наши данные о записи в исходный JSON под ключом "recording",
         # не модифицируя и не синтезируя пользовательские поля
-        json_filepath = str(Path(current_audio).with_suffix(".json")) if current_audio else ""
+        session_id = self.pending_session_id or f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        if current_audio:
+            json_filepath = str(Path(current_audio).with_suffix(".json"))
+        else:
+            json_filepath = str(Path(self.config.recordings_dir) / f"{session_id}.json")
+
         import copy
         full_json = copy.deepcopy(self.current_meeting_data) if self.current_meeting_data else {}
-        session_id = self.pending_session_id or f"rec_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         if not full_json:
             # Если запись запущена локально вручную кнопкой без входящего REST JSON
@@ -834,8 +887,11 @@ class MainWindow(QMainWindow):
 
         if json_filepath:
             try:
-                with open(json_filepath, "w", encoding="utf-8") as f:
+                tmp_json_path = json_filepath + ".tmp"
+                with open(tmp_json_path, "w", encoding="utf-8") as f:
                     json.dump(full_json, f, ensure_ascii=False, indent=2)
+                # Атомарное переименование (защита от пустых файлов при краше)
+                os.replace(tmp_json_path, json_filepath)
                 print(f"[Record] Сохранен JSON-пакет сессии: {json_filepath}")
             except Exception as e:
                 print(f"[Record] Ошибка сохранения JSON файла: {e}")
@@ -899,9 +955,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Отправка", "Не задан URL сервера для выгрузки. Настройте его в Настройках.")
             return
 
+        # Очищаем мертвые воркеры перед проверкой
+        self.active_workers = [w for w in self.active_workers if w.isRunning()]
+
         # Предотвращаем дублирование одновременной отправки одной и той же записи
         for w in self.active_workers:
-            if w.rec_id == rec_id and w.isRunning():
+            if w.rec_id == rec_id:
                 self._set_status_text(f"Запись #{rec_id} уже отправляется на сервер...")
                 return
 
@@ -926,8 +985,16 @@ class MainWindow(QMainWindow):
 
     def _on_upload_progress(self, rec_id: int, msg: str) -> None:
         self.db.update_recording(rec_id, status=STATUS_IN_PROGRESS)
-        self._refresh_history()
         self._set_status_text(msg)
+
+        # Точечное обновление ячейки со статусом без перерисовки всей таблицы
+        for row in range(self.history_table.rowCount()):
+            item_status = self.history_table.item(row, 4)
+            # В Data(UserRole) мы сохраним rec_id при генерации таблицы
+            if item_status and item_status.data(Qt.ItemDataRole.UserRole) == rec_id:
+                item_status.setText(msg)
+                item_status.setForeground(QColor("#ef6c00"))  # Orange
+                break
 
     def _on_upload_finished(self, rec_id: int, success: bool, msg: str) -> None:
         """
@@ -939,6 +1006,8 @@ class MainWindow(QMainWindow):
         new_status = STATUS_SENT if success else STATUS_NOT_SENT
         self.db.update_recording(rec_id, status=new_status)
         self.active_workers = [w for w in self.active_workers if w.isRunning()]
+
+        # Точечное обновление UI или полная перерисовка, если нужны новые кнопки
         self._refresh_history()
 
         if success:
@@ -969,7 +1038,7 @@ class MainWindow(QMainWindow):
     def _toggle_recording(self) -> None:
         """Единое действие для кнопки: старт записи или её остановка."""
         if self.recorder and self.recorder.is_recording:
-            self._stop_recording()
+            self._confirm_stop_recording()
         else:
             self._manual_start_recording()
 
@@ -1101,6 +1170,7 @@ class MainWindow(QMainWindow):
 
             item_status = QTableWidgetItem(raw_status)
             item_status.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            item_status.setData(Qt.ItemDataRole.UserRole, rec['id'])
 
             if raw_status == STATUS_SENT:
                 item_status.setForeground(QColor("#2e7d32"))  # Green

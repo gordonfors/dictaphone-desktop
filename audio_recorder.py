@@ -4,6 +4,7 @@ import time
 import queue
 import threading
 import traceback
+import locale
 from pathlib import Path
 from typing import Optional, Callable, List, Dict, Any
 
@@ -18,6 +19,10 @@ try:
     import av
 except ImportError:
     av = None
+
+RMS_MIN_THRESHOLD = 1e-5
+VU_METER_DB_MULTIPLIER = 20.0
+VU_METER_RANGE_DB = 50.0
 
 
 class AudioRecorder:
@@ -110,7 +115,8 @@ class AudioRecorder:
                     try:
                         name = raw_bytes.decode('utf-8')
                     except UnicodeDecodeError:
-                        name = raw_bytes.decode('cp1251', errors='replace')
+                        sys_enc = locale.getpreferredencoding()
+                        name = raw_bytes.decode(sys_enc, errors='replace')
                 else:
                     name = dev.get('name', '')
                     # Check for accidental mojibake
@@ -269,11 +275,11 @@ class AudioRecorder:
         if self.on_level:
             try:
                 rms = np.sqrt(np.mean(indata**2))
-                if rms > 1e-5:
+                if rms > RMS_MIN_THRESHOLD:
                     import math
-                    db = 20 * math.log10(rms)
+                    db = VU_METER_DB_MULTIPLIER * math.log10(rms)
                     # Map -50 dB -> 0.0, 0 dB -> 1.0
-                    norm_level = max(0.0, min(1.0, (db + 50.0) / 50.0))
+                    norm_level = max(0.0, min(1.0, (db + VU_METER_RANGE_DB) / VU_METER_RANGE_DB))
                 else:
                     norm_level = 0.0
                 self.on_level(norm_level)
@@ -282,45 +288,60 @@ class AudioRecorder:
 
         # Queue audio block for encoding
         try:
-            self._audio_queue.put_nowait(indata.copy())
+            # Use tobytes() to reduce Garbage Collector pressure from frequent numpy allocations
+            self._audio_queue.put_nowait(indata.tobytes())
         except queue.Full:
             pass
 
     def _encode_worker(self) -> None:
         """Worker thread converting raw PCM chunks to Opus WebM frames."""
-        buffer = []
-        target_frame_size = int(self.sample_rate * 0.02)  # 20ms
+        try:
+            buffer = []
+            target_frame_size = int(self.sample_rate * 0.02)  # 20ms
 
-        while not self._stop_event.is_set() or not self._audio_queue.empty():
-            try:
-                data = self._audio_queue.get(timeout=0.1)
-                buffer.append(data)
-            except queue.Empty:
-                continue
+            while not self._stop_event.is_set() or not self._audio_queue.empty():
+                try:
+                    data_bytes = self._audio_queue.get(timeout=0.1)
+                    raw_data = np.frombuffer(data_bytes, dtype=np.float32)
 
-            total_samples = sum(len(c) for c in buffer)
-            if total_samples >= target_frame_size:
+                    # Защита от поврежденных буферов (не кратных кол-ву каналов)
+                    remainder = len(raw_data) % self.channels
+                    if remainder != 0:
+                        raw_data = raw_data[:-remainder]
+
+                    data = raw_data.reshape(-1, self.channels)
+                    buffer.append(data)
+                except queue.Empty:
+                    continue
+
+                total_samples = sum(len(c) for c in buffer)
+                if total_samples >= target_frame_size:
+                    combined = np.concatenate(buffer, axis=0)
+                    while len(combined) >= target_frame_size:
+                        chunk = combined[:target_frame_size]
+                        combined = combined[target_frame_size:]
+                        self._write_chunk(chunk)
+
+                    buffer = [combined] if len(combined) > 0 else []
+
+            # Write any trailing audio
+            if buffer:
                 combined = np.concatenate(buffer, axis=0)
-                while len(combined) >= target_frame_size:
-                    chunk = combined[:target_frame_size]
-                    combined = combined[target_frame_size:]
-                    self._write_chunk(chunk)
+                if len(combined) > 0:
+                    self._write_chunk(combined)
 
-                buffer = [combined] if len(combined) > 0 else []
-
-        # Write any trailing audio
-        if buffer:
-            combined = np.concatenate(buffer, axis=0)
-            if len(combined) > 0:
-                self._write_chunk(combined)
-
-        # Flush encoder packets to container
-        if self._av_stream and self._container:
-            try:
-                for packet in self._av_stream.encode():
-                    self._container.mux(packet)
-            except Exception as e:
-                print(f"[AudioRecorder] Error flushing encoder: {e}")
+            # Flush encoder packets to container
+            if self._av_stream and self._container:
+                try:
+                    for packet in self._av_stream.encode():
+                        self._container.mux(packet)
+                except Exception as e:
+                    print(f"[AudioRecorder] Error flushing encoder: {e}")
+        except Exception as e:
+            traceback.print_exc()
+            self._stop_event.set()
+            if self.on_error:
+                self.on_error(f"Сбой кодировщика аудио: {e}")
 
     def _write_chunk(self, chunk: np.ndarray) -> None:
         if not self._container or not self._av_stream:
@@ -367,10 +388,9 @@ class AudioRecorder:
         """Возвращает точную текущую длительность записи в секундах с учетом пауз."""
         if not self.is_recording:
             return getattr(self, 'elapsed_time', 0.0)
-        paused = getattr(self, 'total_paused_time', 0.0)
-        if self.is_paused and getattr(self, '_pause_start', 0.0) > 0:
-            paused += (time.time() - self._pause_start)
-        return max(0.0, (time.time() - self.start_time) - paused)
+        if self.sample_rate and self.sample_rate > 0:
+            return self.total_samples_written / float(self.sample_rate)
+        return 0.0
 
     def stop_recording(self) -> float:
         if not self.is_recording:
@@ -381,11 +401,8 @@ class AudioRecorder:
             self.is_paused = False
 
         self.is_recording = False
-        duration = (time.time() - self.start_time) - getattr(self, 'total_paused_time', 0.0)
-        duration = max(0.0, duration)
-        self.elapsed_time = duration
 
-        # Stop audio hardware input
+        # Stop audio hardware input FIRST
         if self._stream:
             try:
                 self._stream.stop()
@@ -397,8 +414,18 @@ class AudioRecorder:
         # Stop worker thread and flush
         self._stop_event.set()
         if self._record_thread and self._record_thread.is_alive():
-            self._record_thread.join(timeout=3.0)
+            # Ждем завершения кодировщика (пока не опустеет очередь), но не более 10 секунд
+            self._record_thread.join(timeout=10.0)
+            if self._record_thread.is_alive():
+                print("[AudioRecorder] Внимание: воркер кодировщика не успел завершиться за 10 секунд.")
         self._record_thread = None
+
+        # Очищаем очередь, чтобы зависший воркер (если он все еще жив) не пытался писать в закрытый контейнер
+        while not self._audio_queue.empty():
+            try:
+                self._audio_queue.get_nowait()
+            except queue.Empty:
+                break
 
         # Close container
         if self._container:
@@ -408,6 +435,13 @@ class AudioRecorder:
                 print(f"[AudioRecorder] Error closing container: {e}")
             self._container = None
             self._av_stream = None
+
+        if self.sample_rate and self.sample_rate > 0:
+            duration = self.total_samples_written / float(self.sample_rate)
+        else:
+            duration = 0.0
+
+        self.elapsed_time = duration
 
         if self.on_level:
             try:

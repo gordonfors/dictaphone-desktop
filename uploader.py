@@ -1,14 +1,12 @@
 import os
 import json
 import time
+import warnings
 from pathlib import Path
 from typing import Optional, Any
 import requests
 import urllib3
 from PyQt6.QtCore import QThread, pyqtSignal
-
-# Подавляем предупреждения при работе с локальными самоподписанными HTTPS-сертификатами
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class UploadWorker(QThread):
@@ -64,13 +62,6 @@ class UploadWorker(QThread):
             self.finished.emit(self.rec_id, False, f"Аудиофайл не найден: {audio_file.name}")
             return
 
-        try:
-            with open(audio_file, "rb") as fa:
-                audio_bytes = fa.read()
-        except Exception as e:
-            self.finished.emit(self.rec_id, False, f"Ошибка чтения аудиофайла: {e}")
-            return
-
         # Надежное определение пути к JSON файлу
         json_file = Path(self.json_path) if self.json_path else audio_file.with_suffix(".json")
         if not json_file.is_file():
@@ -119,7 +110,7 @@ class UploadWorker(QThread):
                 "title": audio_file.stem,
                 "recording": {
                     "filename": audio_file.name,
-                    "file_size": len(audio_bytes)
+                    "file_size": audio_file.stat().st_size
                 }
             }
             json_content = json.dumps(json_data, ensure_ascii=False, indent=2)
@@ -127,26 +118,21 @@ class UploadWorker(QThread):
         json_bytes = json_content.encode("utf-8")
         json_filename = json_file.name if (json_file and json_file.is_file()) else f"{audio_file.stem}.json"
 
-        # Мультипарт файлы: отправляем и аудиозапись, и JSON-файл (как в старых версиях)
-        files = {
-            "audio": (audio_file.name, audio_bytes, "audio/webm"),
-            "file": (audio_file.name, audio_bytes, "audio/webm"),
-            "json": (json_filename, json_bytes, "application/json"),
-            "json_file": (json_filename, json_bytes, "application/json"),
-        }
+        # Оставляем по одному ключу для аудио и JSON, чтобы не дублировать трафик
+        files_config = [
+            ("file", (audio_file.name, "audio/webm")),
+            ("json_file", (json_filename, json_bytes, "application/json"))
+        ]
 
-        # Тело запроса (Form Data): также передаем JSON строкой в body для вебхуков
+        # В data тоже убираем дублирование. Оставляем один payload
         data = {
-            "json": json_content,
-            "metadata": json_content,
-            "data": json_content,
             "payload": json_content,
             "id": str(json_data.get("id", "")),
             "session_id": str(json_data.get("id", "")),
             "title": str(json_data.get("title", "")),
             "date": str(json_data.get("date", "")),
             "duration": str(json_data.get("recording", {}).get("duration", 0)),
-            "file_size": str(len(audio_bytes)),
+            "file_size": str(json_data.get("recording", {}).get("file_size", 0)),
             "participants": json.dumps(json_data.get("participants", []), ensure_ascii=False)
                 if isinstance(json_data.get("participants"), list)
                 else str(json_data.get("participants", "")),
@@ -174,41 +160,66 @@ class UploadWorker(QThread):
             try:
                 self.progress.emit(self.rec_id, f"Отправка {protocol_tag} ({attempt}/{self.max_retries})...")
                 
-                # Для локальных сетей (192.168.x, 10.x, localhost) публичные сертификаты неприменимы
-                is_lan = any(x in self.upload_url.lower() for x in ("127.0.0.1", "localhost", "192.168.", "10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", ".local"))
+                # Для локальных сетей публичные сертификаты неприменимы
+                is_lan = False
+                try:
+                    from urllib.parse import urlparse
+                    hostname = urlparse(self.upload_url).hostname or ""
+                    is_lan = any(hostname.startswith(x) for x in ("127.0.0.1", "localhost", "192.168.", "10.")) or \
+                             hostname.endswith(".local") or \
+                             any(hostname.startswith(f"172.{i}.") for i in range(16, 32))
+                except Exception:
+                    pass
+
                 current_verify = False if is_lan else self.verify_ssl
 
-                # Оптимизация для локальной сети:
-                # 1. Быстрый connect-таймаут (5с) чтобы не виснуть, если LAN-хост выключен, и щедрый read-таймаут (120с) для передачи больших файлов
                 timeout_val = (5, 120) if is_lan else (10, 60)
                 
-                # 2. В локальной сети отключаем системные прокси (trust_env=False), чтобы Windows VPN/прокси не перехватывал локальные IP (192.168.x.x)
                 session = requests.Session()
                 if is_lan:
                     session.trust_env = False
 
                 response = None
-                try:
-                    response = session.post(
-                        self.upload_url,
-                        files=files,
-                        data=data,
-                        timeout=timeout_val,
-                        verify=current_verify
-                    )
-                except requests.exceptions.SSLError as ssl_err:
-                    print(f"[Uploader] Обнаружен самоподписанный SSL сертификат в локальной сети: {ssl_err}. Повтор без проверки сертификата...")
-                    self.progress.emit(self.rec_id, f"HTTPS (самоподписанный SSL, попытка {attempt})...")
-                    self.verify_ssl = False
-                    response = session.post(
-                        self.upload_url,
-                        files=files,
-                        data=data,
-                        timeout=timeout_val,
-                        verify=False
-                    )
-                finally:
-                    session.close()
+
+                # Открываем файл заново на каждую попытку (чтобы стримить с нуля)
+                with open(audio_file, "rb") as fa:
+                    files = {
+                        "file": (files_config[0][1][0], fa, files_config[0][1][1]),
+                        "json_file": files_config[1][1]
+                    }
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+                            response = session.post(
+                                self.upload_url,
+                                files=files,
+                                data=data,
+                                timeout=timeout_val,
+                                verify=current_verify
+                            )
+                    except requests.exceptions.SSLError as ssl_err:
+                        # Разрешаем самоподписанные сертификаты только если verify_ssl изначально False
+                        # или если мы в локальной сети. Иначе - это нарушение безопасности (MITM)
+                        if self.verify_ssl and not is_lan:
+                            raise ssl_err
+
+                        print(f"[Uploader] Обнаружен самоподписанный SSL сертификат: {ssl_err}. Повтор без проверки сертификата...")
+                        self.progress.emit(self.rec_id, f"HTTPS (самоподписанный SSL, попытка {attempt})...")
+
+                        # Перематываем файл обратно для повторной отправки
+                        fa.seek(0)
+
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+                            response = session.post(
+                                self.upload_url,
+                                files=files,
+                                data=data,
+                                timeout=timeout_val,
+                                verify=False
+                            )
+                    finally:
+                        session.close()
                 
                 if response is not None:
                     if 200 <= response.status_code < 300:
