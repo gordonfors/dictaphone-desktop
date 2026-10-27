@@ -12,6 +12,8 @@ jobs:
   build:
     name: Build Dictaphone.exe (Windows 64-bit)
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -35,30 +37,24 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
 
+      - name: Install NSIS
+        run: choco install nsis --no-progress
+
       - name: Build NSIS Installer
         run: |
-          makensis.exe /INPUTCHARSET UTF8 installer.nsi
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /INPUTCHARSET UTF8 installer.nsi
 
-      - name: Upload Build Artifacts
+      - name: Upload Installer Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Dictaphone-Windows-x64
-          path: |
-            dist/Dictaphone/
-            dist/DictaphoneSetup.exe
+          name: DictaphoneSetup
+          path: dist/DictaphoneSetup.exe
           if-no-files-found: error
-
-      - name: Create Zip Archive for Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          Compress-Archive -Path dist/Dictaphone -DestinationPath dist/Dictaphone-Windows-x64.zip
 
       - name: Release to GitHub (on tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/Dictaphone-Windows-x64.zip
-            dist/DictaphoneSetup.exe
+          files: dist/DictaphoneSetup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
