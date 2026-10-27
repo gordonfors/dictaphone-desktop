@@ -444,17 +444,15 @@ class TestUploader(unittest.TestCase):
         self.assertTrue(success_result[0][0], f"Отправка должна завершиться успехом: {success_result[0][1]}")
 
         # Проверка принятых файлов
-        self.assertIn("file", self.received_files, "Файл аудио должен быть среди файлов")
-        self.assertEqual(self.received_files["file"][0], "rec_meeting_1.webm")
-        self.assertEqual(self.received_files["file"][1], b"MOCK_WEBM_DATA_12345")
+        self.assertIn("audio", self.received_files, "Файл аудио должен быть среди файлов под ключом 'audio'")
+        self.assertEqual(self.received_files["audio"][0], "rec_meeting_1.webm")
+        self.assertEqual(self.received_files["audio"][1], b"MOCK_WEBM_DATA_12345")
 
         self.assertIn("json_file", self.received_files, "Файл JSON должен быть среди файлов")
         self.assertEqual(self.received_files["json_file"][0], "rec_meeting_1.json")
         self.assertIn("Тестовое мероприятие", self.received_files["json_file"][1].decode('utf-8'))
 
         # Проверка принятых текстовых полей формы (Body)
-        self.assertIn("payload", self.received_fields, "JSON должен быть продублирован в body")
-        self.assertIn("Тестовое мероприятие", self.received_fields["payload"])
         self.assertEqual(self.received_fields["id"], "meeting-1")
         self.assertEqual(self.received_fields["title"], "Тестовое мероприятие")
 

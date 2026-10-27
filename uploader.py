@@ -118,39 +118,9 @@ class UploadWorker(QThread):
         json_bytes = json_content.encode("utf-8")
         json_filename = json_file.name if (json_file and json_file.is_file()) else f"{audio_file.stem}.json"
 
-        # Оставляем по одному ключу для аудио и JSON, чтобы не дублировать трафик
-        files_config = [
-            ("file", (audio_file.name, "audio/webm")),
-            ("json_file", (json_filename, json_bytes, "application/json"))
-        ]
-
-        # В data тоже убираем дублирование. Оставляем один payload
-        data = {
-            "payload": json_content,
-            "id": str(json_data.get("id", "")),
-            "session_id": str(json_data.get("id", "")),
-            "title": str(json_data.get("title", "")),
-            "date": str(json_data.get("date", "")),
-            "duration": str(json_data.get("recording", {}).get("duration", 0)),
-            "file_size": str(json_data.get("recording", {}).get("file_size", 0)),
-            "participants": json.dumps(json_data.get("participants", []), ensure_ascii=False)
-                if isinstance(json_data.get("participants"), list)
-                else str(json_data.get("participants", "")),
-            "agenda": json.dumps(json_data.get("agenda", []), ensure_ascii=False)
-                if isinstance(json_data.get("agenda"), list)
-                else str(json_data.get("agenda", "")),
-            "recording": json.dumps(json_data.get("recording", {}), ensure_ascii=False)
-                if isinstance(json_data.get("recording"), dict)
-                else str(json_data.get("recording", ""))
-        }
-
-        # Дополнительно передаем все остальные поля из исходного JSON на верхний уровень form-data
-        for k, v in json_data.items():
-            if k not in data:
-                if isinstance(v, (dict, list)):
-                    data[k] = json.dumps(v, ensure_ascii=False)
-                else:
-                    data[k] = str(v)
+        data = json_data
+        data["duration"] = str(json_data.get("recording", {}).get("duration", 0))
+        data["file_size"] = str(json_data.get("recording", {}).get("file_size", 0))
 
         last_error = ""
         for attempt in range(1, self.max_retries + 1):
@@ -180,12 +150,11 @@ class UploadWorker(QThread):
                     session.trust_env = False
 
                 response = None
-
                 # Открываем файл заново на каждую попытку (чтобы стримить с нуля)
                 with open(audio_file, "rb") as fa:
                     files = {
-                        "file": (files_config[0][1][0], fa, files_config[0][1][1]),
-                        "json_file": files_config[1][1]
+                        "audio": (audio_file.name, fa, "audio/webm"),
+                        "json_file": (json_filename, json_bytes, "application/json")
                     }
                     try:
                         with warnings.catch_warnings():

@@ -1,4 +1,4 @@
-﻿; ==============================================================================
+; ==============================================================================
 ; NSIS Installation Script for Dictaphone (Диктофон)
 ; ==============================================================================
 
@@ -7,7 +7,7 @@ SetCompressor /SOLID lzma
 
 !define PRODUCT_NAME "Диктофон"
 !define PRODUCT_INTERNAL_NAME "Dictaphone"
-!define PRODUCT_VERSION "1.0.0"
+!define PRODUCT_VERSION "1.0.1"
 !define PRODUCT_PUBLISHER "AudioRecorder"
 !define PRODUCT_EXE "Dictaphone.exe"
 !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_INTERNAL_NAME}"
@@ -114,4 +114,5 @@ Section "Uninstall"
     ; Удаляем ветки реестра
     DeleteRegKey HKLM "${PRODUCT_UNINST_KEY}"
     DeleteRegKey HKLM "${PRODUCT_DIR_REGKEY}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "AudioDictaphone"
 SectionEnd
