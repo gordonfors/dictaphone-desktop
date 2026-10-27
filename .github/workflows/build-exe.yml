@@ -35,11 +35,17 @@ jobs:
           PYTHONIOENCODING: utf-8
           PYTHONUTF8: "1"
 
-      - name: Upload Build Artifact
+      - name: Build NSIS Installer
+        run: |
+          makensis.exe /INPUTCHARSET UTF8 installer.nsi
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: Dictaphone-Windows-x64
-          path: dist/Dictaphone/
+          path: |
+            dist/Dictaphone/
+            dist/DictaphoneSetup.exe
           if-no-files-found: error
 
       - name: Create Zip Archive for Release
@@ -51,6 +57,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Dictaphone-Windows-x64.zip
+          files: |
+            dist/Dictaphone-Windows-x64.zip
+            dist/DictaphoneSetup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
